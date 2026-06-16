@@ -330,13 +330,13 @@
                                 </p>
                                 <input 
                                     type="password" 
-                                    placeholder={defaultApiKey !== "ТВОЙ_КЛЮЧ_ЗДЕСЬ" && defaultApiKey.length > 5 ? "✅ Ключ уже встроен разработчиком" : "Вставьте ключ сюда (AIzaSy...)"}
+                                    placeholder={defaultApiKey !== "ТВОЙ_КЛЮЧ_ЗДЕСЬ" && defaultApiKey.length > 5 ? " Ключ уже встроен разработчиком" : "Вставьте ключ сюда (AIzaSy...)"}
                                     value={settings.userApiKey}
                                     onChange={(e) => setSettings({...settings, userApiKey: e.target.value})}
                                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
                                 />
                                 {(!settings.userApiKey && (defaultApiKey === "ТВОЙ_КЛЮЧ_ЗДЕСЬ" || !defaultApiKey)) && (
-                                    <p className="text-xs text-amber-600 mt-2 font-medium"⚠️ Без ключа будут работать только базовые карточки (упражнения 1, 2, 3).</p>
+                                    <p className="text-xs text-amber-600 mt-2 font-medium" Без ключа будут работать только базовые карточки (упражнения 1, 2, 3).</p>
                                 )}
                             </div>
 
