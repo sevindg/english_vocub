@@ -8,12 +8,19 @@
     <!-- Подключаем Tailwind CSS для стилей -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Классическое подключение React и ReactDOM (самое надежное для HTML файлов) -->
+    <!-- Классическое подключение React и ReactDOM -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     
     <!-- Подключаем Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Настраиваем Babel на классический надежный режим работы с React -->
+    <script>
+        Babel.registerPreset('react-classic', {
+            presets: [[Babel.availablePresets['react'], { runtime: 'classic' }]]
+        });
+    </script>
     
     <style>
         /* Дополнительные стили для анимаций */
@@ -24,14 +31,12 @@
 <body class="bg-slate-50 text-slate-800 font-sans antialiased min-h-screen">
     <div id="root"></div>
 
-    <!-- Атрибут data-presets="react" отключает лишние преобразования, чтобы ES-модули работали корректно -->
-    <script type="text/babel" data-type="module" data-presets="react">
-        /** @jsx React.createElement */
-        /** @jsxFrag React.Fragment */
+    <!-- Используем созданный пресет react-classic вместо обычного -->
+    <script type="text/babel" data-type="module" data-presets="react-classic">
         
         const { useState, useEffect, useCallback, Fragment } = React;
         
-        // Прямые импорты Firebase (работают без importmap)
+        // Прямые импорты Firebase
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
         import { getFirestore, collection, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
@@ -69,7 +74,7 @@
         // --- Функция для взаимодействия с LLM (Gemini) ---
         const generateContent = async (prompt, jsonSchema = null, customApiKey = "") => {
             const activeKey = customApiKey || defaultApiKey;
-            if (!activeKey || activeKey === "ТВОЙ_КЛЮЧ_ЗДЕСЬ") {
+            if (!activeKey) {
                 throw new Error("API ключ не указан. Вернитесь в настройки и введите ключ.");
             }
 
@@ -427,7 +432,7 @@
                                     type="checkbox" 
                                     checked={dictionary.length > 0 && selectedWordIds.length === dictionary.length}
                                     onChange={toggleAll}
-                                    className="mr-2 rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                                    className="mr-2 rounded text-indigo-600 focus:ring-indigo-50 w-4 h-4 cursor-pointer"
                                 />
                                 Выбрать все
                             </label>
