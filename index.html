@@ -36,7 +36,7 @@
         
         const { useState, useEffect, useCallback, Fragment } = React;
         
-        // Прямые импорты Firebase
+        // Прямые импорты Firebase (безопасны, активируются только при наличии конфигурации)
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
         import { getFirestore, collection, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
@@ -53,34 +53,47 @@
         const IconX = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>;
         const IconLoader = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
-        // --- НАСТРОЙКИ API ---
-        const defaultApiKey = ""; 
+        // --- ВАШ ВСТРОЕННЫЙ КЛЮЧ API ---
+        const defaultApiKey = "AQ.Ab8RN6KvDlgiqxHv-N_82Wd1g7710RSb7pkmfyF0vX36jgim1A"; 
 
         // --- ИНИЦИАЛИЗАЦИЯ FIREBASE (Умная проверка) ---
         let app = null, auth = null, db = null;
         try {
-            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-            // Инициализируем только если есть реальные ключи (иначе работаем через localStorage)
-            if (firebaseConfig && Object.keys(firebaseConfig).length > 0) {
-                app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
+            const firebaseConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+            if (firebaseConfigStr) {
+                const config = JSON.parse(firebaseConfigStr);
+                if (Object.keys(config).length > 0) {
+                    app = initializeApp(config);
+                    auth = getAuth(app);
+                    db = getFirestore(app);
+                }
             }
         } catch (e) {
-            console.warn("Облако отключено, используем локальное сохранение.");
+            console.warn("Облако отключено, используем локальное сохранение браузера.");
         }
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'vocab-app-id';
 
-        // --- Функция для взаимодействия с LLM (Gemini) ---
+        // --- Функция для взаимодействия с LLM (Продвинутая и безотказная) ---
         const generateContent = async (prompt, jsonSchema = null, customApiKey = "") => {
             const activeKey = customApiKey || defaultApiKey;
+            
             if (!activeKey) {
-                throw new Error("API ключ не указан. Вернитесь в настройки и введите ключ.");
+                throw new Error("API ключ не найден. Пожалуйста, введите ключ в настройках.");
             }
 
-            // ИСПРАВЛЕНО: Теперь используем стандартную модель gemini-1.5-flash
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${activeKey}`;
-            
+            // Список моделей для тестирования (от новых к старым надежным)
+            const modelsToTry = [
+                'gemini-1.5-flash',
+                'gemini-1.5-flash-latest',
+                'gemini-1.5-pro-latest',
+                'gemini-pro'
+            ];
+
+            // Если мы находимся в редакторе Canvas, добавляем спец-превью модель первой
+            if (!customApiKey && typeof __app_id !== 'undefined') {
+                modelsToTry.unshift('gemini-2.5-flash-preview-09-2025');
+            }
+
             const payload = {
                 contents: [{ parts: [{ text: prompt }] }],
                 systemInstruction: { parts: [{ text: "Ты — опытный преподаватель английского языка. Отвечай строго по формату." }] }
@@ -93,32 +106,69 @@
                 };
             }
 
-            const delays = [1000, 2000, 4000, 8000, 16000];
-            
-            for (let i = 0; i <= delays.length; i++) {
-                try {
-                    const response = await fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    
-                    if (!response.ok) {
-                        const errText = await response.text();
-                        throw new Error(`API Error: ${response.status} - ${errText}`);
+            let lastErrorMsg = "";
+
+            // Умный перебор моделей: если одна выдает 404 (Не найдена), код мгновенно пробует следующую
+            for (const model of modelsToTry) {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`;
+                let success = false;
+                let resultText = null;
+
+                // Защита от перегрузки сети (ретраи при 429 или 500 ошибках)
+                const delays = [1000, 2000, 4000]; 
+                for (let attempt = 0; attempt <= delays.length; attempt++) {
+                    try {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        
+                        if (!response.ok) {
+                            const errText = await response.text();
+                            const status = response.status;
+                            
+                            // Если получаем 404 или 400 - эта модель недоступна для данного ключа, пробуем СЛЕДУЮЩУЮ модель
+                            if (status === 404 || status === 400) {
+                                lastErrorMsg = `Модель ${model} недоступна (Ошибка ${status}).`;
+                                break; 
+                            }
+                            
+                            // Иначе (например, ошибка сети) - пробуем еще раз эту же модель
+                            throw new Error(`API Error: ${status} - ${errText}`);
+                        }
+                        
+                        const result = await response.json();
+                        resultText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                        
+                        if (!resultText) throw new Error("Пустой ответ от API");
+                        success = true;
+                        break; // Успех! Выходим из цикла попыток
+                    } catch (err) {
+                        lastErrorMsg = err.message;
+                        if (attempt < delays.length) {
+                            await new Promise(r => setTimeout(r, delays[attempt]));
+                        }
                     }
-                    
-                    const result = await response.json();
-                    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-                    
-                    if (!text) throw new Error("Пустой ответ от API");
-                    
-                    return jsonSchema ? JSON.parse(text) : text;
-                } catch (err) {
-                    if (i === delays.length) throw err;
-                    await new Promise(r => setTimeout(r, delays[i]));
+                }
+                
+                if (success) {
+                    if (jsonSchema) {
+                        try {
+                            // Очищаем ответ от случайных Markdown-артефактов нейросети
+                            const cleanText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+                            return JSON.parse(cleanText);
+                        } catch (e) {
+                            console.error("Ошибка парсинга JSON:", e, resultText);
+                            throw new Error("Нейросеть вернула данные в неверном формате.");
+                        }
+                    }
+                    return resultText;
                 }
             }
+            
+            // Если все модели перебраны и ни одна не сработала
+            throw new Error(`Все модели ИИ недоступны для данного ключа. Последняя ошибка: ${lastErrorMsg}`);
         };
 
         // --- ГЛАВНЫЙ КОМПОНЕНТ ---
@@ -335,16 +385,16 @@
                             <div className="bg-slate-100 p-4 rounded-xl">
                                 <label className="block text-sm font-bold text-slate-800 mb-1">Ключ Google Gemini API:</label>
                                 <p className="text-xs text-slate-600 mb-3 leading-relaxed">
-                                    Нужен для умных упражнений (4 и 5). Бесплатный ключ можно получить за 1 минуту в <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-semibold hover:text-indigo-800 transition-colors">Google AI Studio</a>.
+                                    В код уже встроен рабочий API ключ разработчика. Если хотите, можете указать свой личный ключ ниже.
                                 </p>
                                 <input 
                                     type="password" 
-                                    placeholder="Вставьте ключ сюда (AIzaSy...)"
+                                    placeholder={defaultApiKey ? "✅ Встроенный ключ активен" : "Вставьте ключ сюда..."}
                                     value={settings.userApiKey || ''}
                                     onChange={(e) => setSettings({...settings, userApiKey: e.target.value})}
                                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
                                 />
-                                {!settings.userApiKey && (
+                                {(!settings.userApiKey && !defaultApiKey) && (
                                     <p className="text-xs text-amber-600 mt-2 font-medium">Внимание: Без ключа будут работать только базовые карточки (упражнения 1, 2, 3).</p>
                                 )}
                             </div>
@@ -758,11 +808,6 @@
             const [errorMsg, setErrorMsg] = useState('');
 
             const generateTask = useCallback(async () => {
-                if (!settings.userApiKey) {
-                    setErrorMsg('Пожалуйста, вернитесь в настройки и введите API ключ.');
-                    return;
-                }
-
                 setLoading(true);
                 setErrorMsg('');
                 setData(null);
@@ -817,7 +862,7 @@
                         <div className="bg-red-50 text-red-700 p-4 rounded-xl mb-6">
                             <p className="font-bold">Ошибка:</p>
                             <p className="text-sm">{errorMsg}</p>
-                            {settings.userApiKey && <button onClick={generateTask} className="mt-3 bg-red-100 px-4 py-2 rounded hover:bg-red-200">Попробовать снова</button>}
+                            <button onClick={generateTask} className="mt-3 bg-red-100 px-4 py-2 rounded hover:bg-red-200">Попробовать снова</button>
                         </div>
                     )}
 
@@ -891,11 +936,6 @@
             const [errorMsg, setErrorMsg] = useState('');
 
             const generateTask = useCallback(async () => {
-                if (!settings.userApiKey) {
-                    setErrorMsg('Пожалуйста, вернитесь в настройки и введите API ключ.');
-                    return;
-                }
-
                 setLoading(true);
                 setErrorMsg('');
                 setData(null);
@@ -969,7 +1009,7 @@
                         <div className="bg-red-50 text-red-700 p-4 rounded-xl mb-6">
                             <p className="font-bold">Ошибка API:</p>
                             <p className="text-sm">{errorMsg}</p>
-                            {settings.userApiKey && <button onClick={generateTask} className="mt-3 bg-red-100 px-4 py-2 rounded hover:bg-red-200 text-sm">Обновить</button>}
+                            <button onClick={generateTask} className="mt-3 bg-red-100 px-4 py-2 rounded hover:bg-red-200 text-sm">Обновить</button>
                         </div>
                     )}
 
