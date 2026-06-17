@@ -53,6 +53,11 @@
         const IconX = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>;
         const IconLoader = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
+        // ⚠️ ВНИМАНИЕ: ОСТАВЬТЕ ЭТО ПОЛЕ ПУСТЫМ! ⚠️
+        // GitHub моментально сканирует и блокирует ключи, размещенные в коде.
+        // Вводите свой ключ ТОЛЬКО через интерфейс приложения в браузере.
+        const defaultApiKey = ""; 
+
         // --- ИНИЦИАЛИЗАЦИЯ FIREBASE (Умная проверка) ---
         let app = null, auth = null, db = null;
         try {
@@ -70,36 +75,74 @@
         }
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'vocab-app-id';
 
-        // --- Универсальная функция API (Работает с ЛЮБЫМИ моделями Gemini) ---
+        // Глобальный кэш для умного алгоритма выбора модели
+        let cachedModelName = null;
+        let cachedModelKey = null;
+
+        // --- Функция для взаимодействия с LLM (Продвинутая и безотказная) ---
         const generateContent = async (prompt, jsonSchema = null, customApiKey = "") => {
-            if (!customApiKey) {
-                throw new Error("API ключ не найден. Пожалуйста, введите ваш личный ключ в настройках профиля.");
+            const activeKey = customApiKey || defaultApiKey;
+            
+            if (!activeKey) {
+                throw new Error("API ключ не найден. Пожалуйста, введите ваш личный ключ в настройках.");
             }
 
-            // Список моделей (надежный фоллбэк)
-            const modelsToTry = [
-                'gemini-1.5-flash',
-                'gemini-1.5-pro',
-                'gemini-pro'
-            ];
+            // Если пользователь поменял ключ в настройках — сбрасываем кэш моделей
+            if (cachedModelKey !== activeKey) {
+                cachedModelName = null;
+                cachedModelKey = activeKey;
+            }
 
-            // Интегрируем инструкции по формату прямо в текст запроса (это поддерживают 100% моделей)
+            // Интегрируем инструкции по формату прямо в текст запроса (безотказный метод)
             let finalPrompt = "Ты — опытный преподаватель английского языка. Отвечай строго по запросу.\n\n" + prompt;
             if (jsonSchema) {
-                finalPrompt += "\n\nВАЖНО: Верни ТОЛЬКО валидный JSON. Никакого дополнительного текста (без разметки markdown). Структура JSON должна строго соответствовать следующей схеме:\n" + JSON.stringify(jsonSchema.properties);
+                finalPrompt += "\n\nВАЖНО: Верни ТОЛЬКО валидный JSON без разметки markdown. Структура JSON должна строго соответствовать схеме:\n" + JSON.stringify(jsonSchema.properties);
             }
 
             const payload = {
                 contents: [{ parts: [{ text: finalPrompt }] }]
             };
 
-            let lastErrorMsg = "";
+            // ЭТАП 1: Умный поиск доступной модели (делается 1 раз для ключа)
+            if (!cachedModelName) {
+                const modelsRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${activeKey}`);
+                
+                if (!modelsRes.ok) {
+                    const err = await modelsRes.json().catch(()=>({}));
+                    const msg = err.error?.message || modelsRes.statusText;
+                    
+                    if (msg.includes("API_KEY_INVALID")) {
+                        throw new Error("Ваш API ключ заблокирован Google (вероятно, из-за публикации в коде). Создайте новый ключ и введите его в браузере.");
+                    }
+                    if (msg.includes("User location is not supported")) {
+                        throw new Error("Google Gemini API недоступен в вашей стране (РФ). Пожалуйста, включите VPN.");
+                    }
+                    throw new Error(`Ошибка проверки ключа: ${msg}`);
+                }
+                
+                const modelsData = await modelsRes.json();
+                const validModels = (modelsData.models || []).filter(m => 
+                    m.supportedGenerationMethods && m.supportedGenerationMethods.includes("generateContent")
+                );
+                
+                if (validModels.length === 0) {
+                    throw new Error("Ваш ключ действителен, но не имеет доступа к текстовым моделям ИИ.");
+                }
 
-            for (const model of modelsToTry) {
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${customApiKey}`;
-                let success = false;
-                let resultText = null;
+                // Ищем самую лучшую и быструю модель (1.5 Flash), либо берем любую доступную
+                let targetModel = validModels.find(m => m.name.includes("gemini-1.5-flash")) ||
+                                  validModels.find(m => m.name.includes("gemini-1.5-pro")) ||
+                                  validModels[0];
+                
+                // Сохраняем имя (например "models/gemini-1.5-flash") в кэш
+                cachedModelName = targetModel.name;
+            }
 
+            // ЭТАП 2: Отправка запроса с ретраями
+            const url = `https://generativelanguage.googleapis.com/v1beta/${cachedModelName}:generateContent?key=${activeKey}`;
+            const delays = [1000, 2000, 4000];
+            
+            for (let i = 0; i <= delays.length; i++) {
                 try {
                     const response = await fetch(url, {
                         method: 'POST',
@@ -110,39 +153,26 @@
                     if (!response.ok) {
                         const errData = await response.json().catch(() => ({}));
                         const errorDetails = errData?.error?.message || response.statusText;
-                        const status = response.status;
                         
-                        // Если ключ заблокирован или недействителен (ошибка 400 API_KEY_INVALID)
-                        if (status === 400 && errorDetails.includes("API_KEY_INVALID")) {
-                            throw new Error("Ваш API ключ заблокирован Google (скорее всего из-за утечки на GitHub). Пожалуйста, удалите старый и выпустите новый ключ в AI Studio.");
+                        if (errorDetails.includes("User location is not supported")) {
+                            throw new Error("Google Gemini API недоступен в вашей стране. Пожалуйста, включите VPN для генерации упражнений.");
                         }
                         
-                        // Если 404 - модель недоступна, просто идем к следующей
-                        if (status === 404) {
-                            lastErrorMsg = `Модель ${model} недоступна.`;
-                            continue; 
+                        if (response.status === 404) {
+                            cachedModelName = null; // Сбрасываем кэш, если модель вдруг исчезла
+                            throw new Error("Выбранная модель временно недоступна. Попробуйте еще раз.");
                         }
                         
-                        throw new Error(`Ошибка API (${status}): ${errorDetails}`);
+                        throw new Error(`Ошибка API (${response.status}): ${errorDetails}`);
                     }
                     
                     const result = await response.json();
-                    resultText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const resultText = result.candidates?.[0]?.content?.parts?.[0]?.text;
                     
-                    if (!resultText) throw new Error("Получен пустой ответ от API");
-                    success = true;
-                } catch (err) {
-                    // Если это фатальная ошибка ключа - прерываем цикл сразу
-                    if (err.message.includes("заблокирован Google")) {
-                        throw err;
-                    }
-                    lastErrorMsg = err.message;
-                }
-                
-                if (success) {
+                    if (!resultText) throw new Error("Получен пустой ответ от ИИ.");
+                    
                     if (jsonSchema) {
                         try {
-                            // Очищаем ответ от случайных Markdown-артефактов нейросети
                             const cleanText = resultText.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
                             return JSON.parse(cleanText);
                         } catch (e) {
@@ -151,10 +181,16 @@
                         }
                     }
                     return resultText;
+                    
+                } catch (err) {
+                    // Фатальные ошибки (блокировка, гео-блок) нет смысла повторять
+                    if (err.message.includes("VPN") || err.message.includes("заблокирован")) {
+                        throw err;
+                    }
+                    if (i === delays.length) throw err;
+                    await new Promise(r => setTimeout(r, delays[i]));
                 }
             }
-            
-            throw new Error(lastErrorMsg || "Не удалось связаться с серверами Google AI.");
         };
 
         // --- ГЛАВНЫЙ КОМПОНЕНТ ---
@@ -371,7 +407,7 @@
                             <div className="bg-slate-100 p-4 rounded-xl">
                                 <label className="block text-sm font-bold text-slate-800 mb-1">Ваш личный ключ Google AI:</label>
                                 <p className="text-xs text-slate-600 mb-3 leading-relaxed">
-                                    Никогда не публикуйте ключ в открытом коде. Просто вставьте его в это поле — он сохранится в вашем браузере безопасно.
+                                    Никогда не публикуйте ключ в открытом коде на GitHub. Просто вставьте его в это поле — он сохранится в вашем браузере безопасно.
                                 </p>
                                 <input 
                                     type="password" 
@@ -807,7 +843,7 @@
                 
                 const word = words[Math.floor(Math.random() * words.length)].en;
 
-                const prompt = `Уровень: ${settings.level}. Времена: ${settings.tenses.join(', ')}. Слово: "${word}". Сгенерируй одно английское предложение для этого уровня, используя только выбранные времена. В предложении замени слово "${word}" на "___". Придумай 4 неправильных, но похожих варианта. Верни JSON.`;
+                const prompt = `Уровень: ${settings.level}. Времена: ${settings.tenses.join(', ')}. Слово: "${word}". Сгенерируй одно английское предложение для этого уровня, используя только выбранные времена. В предложении замени слово "${word}" на "___". Придумай 4 неправильных, но похожих варианта.`;
 
                 const schema = {
                     type: "OBJECT",
@@ -941,7 +977,7 @@
                 const shuffledWords = [...words].sort(() => Math.random() - 0.5).slice(0, 2);
                 const targetWords = shuffledWords.map(w => w.en);
 
-                const prompt = `Уровень: ${settings.level}. Времена: ${settings.tenses.join(', ')}. Слова: ${targetWords.join(', ')}. Сгенерируй одно осмысленное предложение на РУССКОМ языке для перевода на английский. Студент должен обязательно использовать эти слова. Верни JSON.`;
+                const prompt = `Уровень: ${settings.level}. Времена: ${settings.tenses.join(', ')}. Слова: ${targetWords.join(', ')}. Сгенерируй одно осмысленное предложение на РУССКОМ языке для перевода на английский. Студент должен обязательно использовать эти слова.`;
 
                 const schema = {
                     type: "OBJECT",
@@ -971,7 +1007,7 @@
                 setChecking(true);
                 setErrorMsg('');
 
-                const prompt = `Уровень ${settings.level}. Русское: "${data.russianSentence}". Перевод: "${input}". Ожидались слова: ${data.targetEnglishWordsUsed.join(', ')}. Оцени правильность перевода, прости мелкие опечатки, но укажи на них. Верни JSON.`;
+                const prompt = `Уровень ${settings.level}. Русское: "${data.russianSentence}". Перевод: "${input}". Ожидались слова: ${data.targetEnglishWordsUsed.join(', ')}. Оцени правильность перевода, прости мелкие опечатки, но укажи на них.`;
 
                 const schema = {
                     type: "OBJECT",
